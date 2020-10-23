@@ -7,19 +7,20 @@ if [[ $1 == -d ]]; then
     shift
 fi
 
-major_version=5
+major_version=6
 
 shopt -s nullglob
 
 cache_dir=$CM_DIR/clipmenu.$major_version.$USER
-cache_file_prefix=$cache_dir/line_cache
+cache_file=$cache_dir/line_cache
 lock_file=$cache_dir/lock
 lock_timeout=2
 
 if [[ $1 == --help ]] || [[ $1 == -h ]]; then
     cat << 'EOF'
 clipdel deletes clipmenu entries matching a regex. By default, just lists what
-it would delete, pass -d to do it for real.
+it would delete, pass -d to do it for real. If no pattern is passed as an argument,
+it will try to read one from standard input.
 
 ".*" is special, it will just nuke the entire data directory, including the
 line caches and all other state.
@@ -35,17 +36,22 @@ EOF
     exit 0
 fi
 
-line_cache_files=( "$cache_file_prefix"_* )
-
-if (( ${#line_cache_files[@]} == 0 )); then
-    printf '%s\n' "No line cache files found, no clips exist" >&2
+if ! [[ -f $cache_file ]]; then
+    printf '%s\n' "No line cache file found, no clips exist" >&2
     exit 0  # Well, this is a kind of success...
 fi
 
-# https://github.com/koalaman/shellcheck/issues/1141
-# shellcheck disable=SC2124
-raw_pattern=$1
+if [[ -n $1 ]]; then
+    raw_pattern=$1
+elif ! [[ -t 0 ]]; then
+    IFS= read -r raw_pattern
+fi
+
 esc_pattern=${raw_pattern//\#/'\#'}
+
+# We use 2 separate sed commands so "esc_pattern" matches only the 'clip' text
+# without the timestamp (e.g. $> clipdel '^delete_exact_match$')
+sed_common_command="s#^[0-9]\+ ##;\\#${esc_pattern}#"
 
 if ! [[ $raw_pattern ]]; then
     printf '%s\n' 'No pattern provided, see --help' >&2
@@ -57,11 +63,12 @@ exec {lock_fd}> "$lock_file"
 if (( CM_REAL_DELETE )) && [[ "$raw_pattern" == ".*" ]]; then
     flock -x -w "$lock_timeout" "$lock_fd" || exit
     rm -rf -- "$cache_dir"
+    mkdir -p -- "$cache_dir"
     exit 0
 else
     mapfile -t matches < <(
-        cat "${line_cache_files[@]}" | cut -d' ' -f2- | sort -u |
-            sed -n "\\#${esc_pattern}#p"
+        sed -n "${sed_common_command}p" "$cache_file" |
+            sort -u
     )
 
     if (( CM_REAL_DELETE )); then
@@ -72,11 +79,13 @@ else
             rm -f -- "$cache_dir/$ck"
         done
 
-        for file in "${line_cache_files[@]}"; do
-            temp=$(mktemp)
-            cut -d' ' -f2- < "$file" | sed "\\#${esc_pattern}#d" > "$temp"
-            mv -- "$temp" "$file"
-        done
+        temp=$(mktemp)
+        # sed 'h' and 'g' here means save and restore the line, so
+        # timestamps are not removed from non-deleted lines. 'd' deletes the
+        # line and restarts, skipping 'g'/restore.
+        # https://www.gnu.org/software/sed/manual/html_node/Other-Commands.html#Other-Commands
+        sed "h;${sed_common_command}d;g" "$cache_file" > "$temp"
+        mv -- "$temp" "$cache_file"
 
         flock -u "$lock_fd"
     else

@@ -4,8 +4,7 @@ Description=Clipmenu daemon
 [Service]
 ExecStart=/usr/bin/clipmenud
 Restart=always
-RestartSec=0
-Environment=DISPLAY=:0
+RestartSec=500ms
 
 MemoryDenyWriteExecute=yes
 NoNewPrivileges=yes
@@ -13,6 +12,10 @@ ProtectControlGroups=yes
 ProtectKernelTunables=yes
 RestrictAddressFamilies=
 RestrictRealtime=yes
+
+# We don't need to do any clean up, so if something hangs (borked xclip, etc),
+# it's going to stay that way. Just forcefully kill and get it over with.
+TimeoutStopSec=2
 
 [Install]
 WantedBy=default.target
